@@ -1,7 +1,9 @@
 const express = require('express')
 const app = express()
 const cors =require('cors');
-require('dotenv').config()
+require('dotenv').config();
+const stripe = require("stripe")(process.env.PAYMENT_SECRET);
+
 const port = process.env.PORT || 5000;
 
 //middleware
@@ -159,6 +161,63 @@ async function run() {
       const result = await cartCollection.deleteOne(query);
       res.send(result);
     })
+
+    //payment route
+    app.post("/create-payment-intent", async (req, res) =>{
+      const { price  } = req.body;
+      const amount = parseInt(price) * 100;
+      const paymentIntent = await stripe.paymentIntents.create({
+
+        amount : amount,
+        currency: "usd",
+        payment_method_types: ["card"], 
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    })
+
+
+    //post payment info to db
+    app.post('/payment-info', async(req,res)=>{
+      const paymentInfo =req.body;
+      const classId =paymentInfo.classId;
+      const userEmail =paymentInfo.userEmail;
+      const singleClassId =req.query.classId;
+      let query;
+      if(singleClassId){
+        query = { classId: singleClassId, userMail: userEmail};
+
+      }else{
+        query = { classId: {$in: classId}};
+      }
+
+      const classesQuery = {_id: {$in: classId.map(id => new ObjectId(id))}};
+      const classes = await classesCollection.find(classQuery).toArray();
+      const newEnrolledData = {
+        userEmail: userEmail,
+        classId: singleClassId.map(id => new ObjectId(id)),
+        transactionId: paymentInfo.transactionId
+      };
+       
+      const updateDoc = {
+        $set: {
+          totalEnrolled: classes.reduce((total,current) => total + current.totalEnrolled, 0)+ 1 || 0,
+          availableSeats: classes.reduce((total,current) => total + current.availableSeats, 0)- 1 || 0
+
+        }
+      };
+      const updatedResult  =await classesCollection.updateMany(classesQuery,updateDoc, {upsert: true});
+      const enrolledResult = await enrolledCollection.insertOne(newEnrolledData);
+      const deleteResult = await cartCollection.deleteMany(query);
+      const paymentResult =await paymentCollection.insertOne(paymentInfo);
+
+      res.send({paymentResult,deleteResult,enrolledResult,updatedResult})
+
+    })
+
+    //get payment history
+    
 
 
 
